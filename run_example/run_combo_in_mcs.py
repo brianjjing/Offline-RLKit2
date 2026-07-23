@@ -4,7 +4,6 @@ import sys
 import random
 
 import gym
-import d4rl
 
 import numpy as np
 import torch
@@ -15,7 +14,6 @@ from offlinerlkit.modules import ActorProb, Critic, TanhDiagGaussian, EnsembleDy
 from offlinerlkit.dynamics import EnsembleDynamics
 from offlinerlkit.utils.scaler import StandardScaler
 from offlinerlkit.utils.termination_fns import get_termination_fn
-from offlinerlkit.utils.load_dataset import qlearning_dataset
 from offlinerlkit.buffer import ReplayBuffer
 from offlinerlkit.utils.logger import Logger, make_log_dirs
 from offlinerlkit.policy_trainer import MBPolicyTrainer
@@ -132,9 +130,14 @@ def build_abiomed_dataset(env, timesteps=6, feat=12):
     ).reshape(-1, timesteps * feat)                                                   # (N,72)
 
     # one scalar p-level per hour: majority vote over the 6 unnormalized steps, then renormalize
-    pl_unnorm = wm.unnorm_pl(pl).detach().cpu().numpy()                               # (N,6)  (twin on GPU -> bring to CPU)
+    
+    pl_unnorm = np.asarray(wm.unnorm_pl(pl))   # (N,6)  (twin on GPU -> bring to CPU)
+    #pl_unnorm = wm.unnorm_pl(pl).detach().cpu().numpy()             
+
     pl_mode = np.array([np.bincount(np.rint(r).astype(int)).argmax() for r in pl_unnorm]).reshape(-1, 1)
-    actions = wm.normalize_pl(torch.as_tensor(pl_mode, dtype=torch.float32)).detach().cpu().numpy().reshape(-1, 1)
+
+    actions = np.asarray(wm.normalize_pl(torch.as_tensor(pl_mode, dtype=torch.float32))).reshape(-1, 1)
+    #actions = wm.normalize_pl(torch.as_tensor(pl_mode, dtype=torch.float32)).detach().cpu().numpy().reshape(-1, 1)
 
     # reward from the env's own function, per hour, on each (6,12) next state
     nb = next_obs.reshape(-1, timesteps, feat)
