@@ -26,11 +26,18 @@ class EnsembleDynamics(BaseDynamics):
         self.terminal_fn = terminal_fn
         self._penalty_coef = penalty_coef
         self._uncertainty_mode = uncertainty_mode
-        self.classifier_name = classifier['name'] if 'name' in classifier else None   # Added for DBG
-        self.classifier_mean = classifier['mean'] if 'mean' in classifier else None   # Added for DBG
-        self.classifier_std  = classifier['std']  if 'std'  in classifier else None   # Added for DBG
-        self.classifier_model = classifier['model'] #Added for DBG
-        self.classifier_thr = classifier['thr'] #Added for DBG
+        if classifier is not None:
+            self.classifier_name = classifier.get('name')
+            self.classifier_mean = classifier.get('mean')
+            self.classifier_std = classifier.get('std')
+            self.classifier_model = classifier['model']
+            self.classifier_thr = classifier['thr']
+        else:
+            self.classifier_name = None
+            self.classifier_mean = None
+            self.classifier_std = None
+            self.classifier_model = None
+            self.classifier_thr = None
         self.device = self.model.device #Added fror DBG
         self.type = penalty_type #Added for DBG
 
@@ -133,7 +140,7 @@ class EnsembleDynamics(BaseDynamics):
             info = {'penalty': penalty, 'penalized_rewards': penalized_rewards}
 
         else:
-            penalized_rewards = reward
+            penalized_rewards = reward  #Will be run in MCS, bc penalty_coef will be 0.
             info = {'penalized_rewards': penalized_rewards}
 
         # END DBG PENALTY REWARDS
@@ -141,6 +148,8 @@ class EnsembleDynamics(BaseDynamics):
 
         #UNCOMMENT BELOW FOR ORIGINAL PENALTY REWARDS:
         
+
+        #ORIGINAL PENALTY REWARDS:  
         # if self._penalty_coef:
         #     if self._uncertainty_mode == "aleatoric":
         #         penalty = np.amax(np.linalg.norm(std, axis=2), axis=0)

@@ -9,7 +9,8 @@ conda activate COMBO
 
 REPO="/home/brian/repos/OfflineRL-Kit2"
 SCRIPT="run_example/run_combo_in_mcs.py"
-seeds=(42 123 456)          # GORMPO's mult_seed convention
+#seeds=(42 123 456)          # GORMPO's mult_seed convention
+seeds=(123 456)
 
 # offlinerlkit's ROOT_DIR is the literal "log" relative to CWD, so run from the repo
 # root -> logs land in $REPO/log. PYTHONPATH lets `import offlinerlkit` resolve.
