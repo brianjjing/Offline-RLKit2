@@ -3,18 +3,18 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 from typing import Tuple, Optional, List
-try:  # plotting/eval-only deps; not needed for RealNVP.load_model / score_samples
-    import matplotlib.pyplot as plt
-    from sklearn.metrics import roc_curve, auc
-    import seaborn as sns
-except ModuleNotFoundError:
-    pass
 import argparse
-import yaml
 import os
 import sys
 import pickle
-import gym
+try:  # __main__/plotting/config-only deps; RealNVP.load_model + score_samples don't need them
+    import matplotlib.pyplot as plt
+    from sklearn.metrics import roc_curve, auc
+    import seaborn as sns
+    import yaml
+    import gym
+except ModuleNotFoundError:
+    pass
 # Add parent directory to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 try:  # training/plotting-only deps; RealNVP.load_model + score_samples don't need them
