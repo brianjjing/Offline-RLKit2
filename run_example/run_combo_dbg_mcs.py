@@ -120,7 +120,10 @@ class AbiomedGymCompat(gym.Wrapper):
         return obs, reward, terminated or truncated, info
 
     def get_normalized_score(self, score):
-        return score  # no D4RL random/expert reference for clinical data; report raw reward
+        # mb_policy_trainer.py:100-101 multiplies by 100 expecting a D4RL fraction.
+        # Clinical data has no random/expert reference, so undo the scale and let
+        # eval/normalized_episode_reward carry the raw MCS return.
+        return score / 100
 #^^^ADDED FOR ABIOMED ENV COMPATIBILITY - RAW ABIOMED SCORE^^^
 
 
@@ -181,7 +184,9 @@ def train(args=get_args()):
         model_path="/home/brian/repos/OfflineRL-Kit2/abiomed_env/data/10min_1hr_all_data_model.pth",
         data_path ="/home/brian/repos/OfflineRL-Kit2/abiomed_env/data/10min_1hr_all_data.pkl",
         max_steps=6, action_space_type="continuous",
-        reward_type="smooth", normalize_rewards=True, seed=args.seed,
+        reward_type="smooth",
+        normalize_rewards=True,
+        seed=42,
         device=args.device)  # override config.py's hardcoded cuda:1 (invalid under CUDA_VISIBLE_DEVICES=1)
     dataset = build_abiomed_dataset(env)
     
@@ -202,7 +207,7 @@ def train(args=get_args()):
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed_all(args.seed)
     torch.backends.cudnn.deterministic = True
-    env.seed(args.seed)
+    #env.seed(args.seed)
 
     # create policy model
     actor_backbone = MLP(input_dim=np.prod(args.obs_shape), hidden_dims=args.hidden_dims)

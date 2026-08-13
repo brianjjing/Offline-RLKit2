@@ -22,6 +22,7 @@ from offlinerlkit.policy import COMBOPolicy
 sys.path.insert(0, "/home/brian/repos/OfflineRL-Kit2/abiomed_env")
 
 from rl_env import AbiomedRLEnvFactory
+from realnvp_module.realnvp import RealNVP
 
 
 """
@@ -76,6 +77,12 @@ def get_args():
     parser.add_argument("--model-retain-epochs", type=int, default=5)
     parser.add_argument("--real-ratio", type=float, default=0.5)
     parser.add_argument("--load-dynamics-path", type=str, default=None)
+    # GORMPO's abiomed guardian, verbatim from cormpo/config/real/mbpo_realnvp.yaml
+    parser.add_argument("--penalty-coef", type=float, default=0.2)
+    parser.add_argument("--penalty-type", type=str, default="tanh",
+                        choices=["linear", "inverse", "tanh", "tanh_reg", "softplus"])
+    parser.add_argument("--classifier-path", type=str,
+                        default="/public/gormpo/models/abiomed/realnvp/abiomed_realnvp")
 
     parser.add_argument("--epoch", type=int, default=1000)
     parser.add_argument("--step-per-epoch", type=int, default=1000)
@@ -108,7 +115,10 @@ class AbiomedGymCompat(gym.Wrapper):
         return obs, reward, terminated or truncated, info
 
     def get_normalized_score(self, score):
-        return score  # no D4RL random/expert reference for clinical data; report raw reward
+        # mb_policy_trainer.py:100-101 multiplies by 100 expecting a D4RL fraction.
+        # Clinical data has no random/expert reference, so undo the scale and let
+        # eval/normalized_episode_reward carry the raw MCS return.
+        return score / 100
 #^^^ADDED FOR ABIOMED ENV COMPATIBILITY - RAW ABIOMED SCORE^^^
 
 
@@ -243,12 +253,19 @@ def train(args=get_args()):
     #termination_fn = get_termination_fn(task=args.task)
     termination_fn = termination_fn_abiomed
 
+    classifier = RealNVP.load_model(args.classifier_path, device=args.device)  # -> {'model','thr',...}
     dynamics = EnsembleDynamics(
         dynamics_model,
         dynamics_optim,
         scaler,
-        termination_fn
+        termination_fn,
+        penalty_coef=args.penalty_coef,
+        classifier=classifier,
+        penalty_type=args.penalty_type
     )
+    _w = dynamics._return_kde_penalty(
+        dataset["next_observations"][:256], dataset["actions"][:256], type=args.penalty_type)
+    assert 0.0 <= _w.min() and _w.max() <= 1.0, f"penalty escaped [0,1]: {_w.min():.3f}..{_w.max():.3f}"
 
     if args.load_dynamics_path:
         dynamics.load(args.load_dynamics_path)
