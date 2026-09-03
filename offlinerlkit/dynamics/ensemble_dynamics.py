@@ -140,7 +140,7 @@ class EnsembleDynamics(BaseDynamics):
             info = {'penalty': penalty, 'penalized_rewards': penalized_rewards}
 
         else:
-            penalized_rewards = reward  #Will be run in MCS, bc penalty_coef will be 0.
+            penalized_rewards = reward  # guardian off: reached only when penalty_coef == 0
             info = {'penalized_rewards': penalized_rewards}
 
         # END DBG PENALTY REWARDS

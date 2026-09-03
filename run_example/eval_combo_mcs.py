@@ -10,6 +10,7 @@ __main__ mirrors its evaluation loop.
 """
 import argparse
 import os
+import random
 import sys
 
 import gym
@@ -24,6 +25,11 @@ from offlinerlkit.modules import ActorProb, Critic, TanhDiagGaussian
 from offlinerlkit.policy import SACPolicy
 
 from rl_env import AbiomedRLEnvFactory
+from cost_func import (
+    compute_acp_cost_model,
+    weaning_score_model,
+    weaning_score_model_gradient,
+)
 
 
 # Duplicated from run_combo_in_mcs.py:95 rather than imported: that module runs
@@ -103,34 +109,72 @@ def get_combo(env, args):
     return policy
 
 
-def _evaluate(policy, eval_env, episodes):
-    """Identical arithmetic to MBPolicyTrainer._evaluate: sum max_steps rewards
-    per episode, then mean/std across episodes."""
+def _test_window_idxs(env, episodes, seed):
+    """Episode-start indices covering the held-out test split, each at most once.
+
+    rl_env._get_next_episode_start indexes train+val+test as one flat range, so the
+    test split is [len(train)+len(val), total-max_steps]. Deterministic policy plus
+    deterministic twin means one start window == one fixed episode, so sampling with
+    replacement would just re-run the same episodes: enumerate instead, and shuffle
+    before truncating so an --eval_episodes cap is not a temporal prefix.
+    """
+    wm = env.world_model
+    lo = len(wm.data_train) + len(wm.data_val)
+    idxs = list(range(lo, lo + len(wm.data_test) - env.max_steps + 1))
+    random.Random(seed).shuffle(idxs)
+    return idxs[:episodes]
+
+
+def _evaluate(policy, eval_env, episodes, seed):
+    """Sum max_steps rewards per episode, then mean/std across episodes.
+
+    Scores only the held-out test split (see _test_window_idxs) -- the training
+    scripts drop wm.data_test from the offline buffer, so these windows are unseen.
+
+    Also accumulates the clinical episode metrics GORMPO reports in
+    cormpo/helpers/evaluate.py::_evaluate_abiomed -- ACP and weaning score. Both
+    are episode-level (they need the whole action sequence), so they are computed
+    at terminal from the states the actions were taken in plus env.episode_actions
+    (unnormalized p-levels, filled by AbiomedRLEnv.step).
+    """
     policy.eval()
-    returns, lengths = [], []
-    obs = eval_env.reset()
-    episode_reward, episode_length = 0.0, 0
+    returns, lengths, acps, ws_grad, ws_thr = [], [], [], [], []
+    idxs = _test_window_idxs(eval_env, episodes, seed)
 
-    while len(returns) < episodes:
-        action = policy.select_action(obs.reshape(1, -1), deterministic=True)
-        obs, reward, terminal, _ = eval_env.step(action.flatten())
-        episode_reward += reward
-        episode_length += 1
+    for n, idx in enumerate(idxs, 1):
+        obs = eval_env.reset(idx=idx)
+        episode_reward, ep_states = 0.0, []
 
-        if terminal:
-            returns.append(episode_reward)
-            lengths.append(episode_length)
-            episode_reward, episode_length = 0.0, 0
-            obs = eval_env.reset()
-            if len(returns) % 100 == 0:
-                print("  %5d/%d  running mean %+.4f"
-                      % (len(returns), episodes, np.mean(returns)), flush=True)
+        # fixed horizon: termination_fn_abiomed never fires early, so max_steps is the
+        # whole episode. The mean_length assert in __main__ is the check on that.
+        for _ in range(eval_env.max_steps):
+            action = policy.select_action(obs.reshape(1, -1), deterministic=True)
+            ep_states.append(obs)                   # state this action was taken in
+            obs, reward, _terminal, _ = eval_env.step(action.flatten())
+            episode_reward += reward
+
+        # read episode_actions BEFORE the next reset() clears it
+        S, A = np.array(ep_states), eval_env.episode_actions
+        acps.append(compute_acp_cost_model(eval_env.world_model, A, S))
+        ws_grad.append(weaning_score_model_gradient(eval_env.world_model, S, A)[0])
+        ws_thr.append(weaning_score_model(eval_env.world_model, S, A))
+
+        returns.append(episode_reward)
+        lengths.append(eval_env.max_steps)
+        if n % 100 == 0:
+            print("  %5d/%d  running mean %+.4f"
+                  % (n, len(idxs), np.mean(returns)), flush=True)
 
     R, L = np.array(returns), np.array(lengths)
+    ACP, WS, WST = np.array(acps), np.array(ws_grad), np.array(ws_thr)
     return {
+        "n_episodes": len(R),
         "mean_return": R.mean(), "std_return": R.std(),
         "sem_return": R.std() / np.sqrt(len(R)),
         "mean_length": L.mean(), "std_length": L.std(),
+        "mean_acp": ACP.mean(), "std_acp": ACP.std(), "max_acp": ACP.max(), "min_acp": ACP.min(),
+        "mean_ws": WS.mean(), "std_ws": WS.std(), "max_ws": WS.max(), "min_ws": WS.min(),
+        "mean_ws_thr": WST.mean(),
     }
 
 
@@ -139,7 +183,11 @@ def get_args():
     p.add_argument("--policy-path", type=str, required=True)
     p.add_argument("--eval_episodes", type=int, default=1000,
                    help="GORMPO reports at 1000 (cormpo/mopo.py:200); 10 carries ~+/-1.3 of noise")
-    p.add_argument("--seed", type=int, default=1)
+    # nargs so one invocation can sweep eval seeds, matching GORMPO's
+    # helpers/evaluate.py --seeds. "--seed 42" still works (-> [42]), which is what
+    # the mult_seed bash scripts pass.
+    p.add_argument("--seed", "--seeds", type=int, nargs="+", default=[1],
+                   help="eval seed(s): picks which test windows and their order")
     p.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
 
     # must match the values the checkpoint was trained with
@@ -154,29 +202,69 @@ def get_args():
     p.add_argument("--model_path_wm", type=str,
                    default="/home/brian/repos/OfflineRL-Kit2/abiomed_env/data/10min_1hr_all_data_model.pth")
     p.add_argument("--data_path_wm", type=str,
-                   default="/home/brian/repos/OfflineRL-Kit2/abiomed_env/data/10min_1hr_all_data.pkl")
+                   default="/public/gormpo/10min_1hr_all_data.pkl")
     p.add_argument("--max_steps", type=int, default=6)
     return p.parse_args()
 
 
 if __name__ == "__main__":
     args = get_args()
-    np.random.seed(args.seed)
-    torch.manual_seed(args.seed)
+    seeds, all_res = args.seed, []
 
-    env = get_env(args)
-    policy = get_combo(env, args)
-    res = _evaluate(policy, AbiomedGymCompat(env), args.eval_episodes)
+    for seed in seeds:
+        args.seed = seed          # get_env seeds the twin with it
+        np.random.seed(seed)
+        torch.manual_seed(seed)
 
-    print("\n---------------------------------------")
-    print(f"Evaluation over {args.eval_episodes} episodes:")
-    print(f"  Return:  {res['mean_return']:.4f} +/- {res['std_return']:.4f}")
-    print(f"  SEM:     {res['sem_return']:.4f}   <- error bar on the mean")
-    print(f"  Length:  {res['mean_length']:.1f} +/- {res['std_length']:.1f}")
-    print("  Raw MCS scale, no x100 (cf. mb_policy_trainer.py:100-101).")
-    print("---------------------------------------")
+        env = get_env(args)
+        policy = get_combo(env, args)
+        res = _evaluate(policy, AbiomedGymCompat(env), args.eval_episodes, seed)
 
-    # std is patient spread, not estimator error -- it must NOT shrink with episodes,
-    # and a 6-step return cannot leave 6*[-2.0, +0.6393].
-    assert -12.0 <= res["mean_return"] <= 6 * 0.6393, res["mean_return"]
-    assert res["mean_length"] == args.max_steps, res["mean_length"]
+        print("\n---------------------------------------")
+        print(f"Eval seed {seed}: {res['n_episodes']} held-out test episodes "
+              f"(requested {args.eval_episodes}):")
+        print(f"  Return:  {res['mean_return']:.4f} +/- {res['std_return']:.4f}")
+        print(f"  SEM:     {res['sem_return']:.4f}   <- error bar on the mean")
+        print(f"  Length:  {res['mean_length']:.1f} +/- {res['std_length']:.1f}")
+        print(f"  ACP:     {res['mean_acp']:.4f} +/- {res['std_acp']:.4f}"
+              f"   (max {res['max_acp']:.4f}, min {res['min_acp']:.4f})")
+        print(f"  WS:      {res['mean_ws']:.5f} +/- {res['std_ws']:.5f}"
+              f"   (max {res['max_ws']:.5f}, min {res['min_ws']:.5f})   <- gradient stability")
+        print(f"  WS thr:  {res['mean_ws_thr']:.5f}   <- threshold stability (is_stable)")
+        print("  Raw MCS scale, no x100 (cf. mb_policy_trainer.py:100-101).")
+        print("---------------------------------------")
+
+        # std is patient spread, not estimator error -- it must NOT shrink with episodes,
+        # and a 6-step return cannot leave 6*[-2.0, +0.6393].
+        assert -12.0 <= res["mean_return"] <= 6 * 0.6393, res["mean_return"]
+        assert res["mean_length"] == args.max_steps, res["mean_length"]
+        # WS is a per-stable-hour average of p-level deltas; ACP only sums |da| > 2, never negative.
+        assert -1.0 <= res["mean_ws"] <= 2.0, res["mean_ws"]
+        assert res["min_acp"] >= 0.0, res["min_acp"]
+
+        # machine-readable row for the mult_seed bash scripts, emitted only once the
+        # sanity asserts above have passed. Field order is fixed: combo_mcs.sh prepends
+        # the TRAINING seed to it, so this must stay <n_episodes,return,sem>.
+        print(f"CSVROW,{res['n_episodes']},{res['mean_return']:.6f},{res['sem_return']:.6f}")
+        all_res.append((seed, res))
+
+    if len(all_res) > 1:
+        import statistics as st
+        def agg(k):
+            v = [r[k] for _, r in all_res]
+            return st.mean(v), st.stdev(v)
+        ret_m, ret_s = agg("mean_return")
+        acp_m, acp_s = agg("mean_acp")
+        ws_m, ws_s = agg("mean_ws")
+        print("\n=======================================")
+        print(f"Across {len(all_res)} eval seeds  ({args.policy_path})")
+        for s, r in all_res:
+            print(f"  seed {s:>3}: return {r['mean_return']:+.4f} (sem {r['sem_return']:.4f})"
+                  f"  acp {r['mean_acp']:.4f}  ws {r['mean_ws']:.5f}")
+        # +/- is spread over which test windows were drawn -- every eval seed scores the
+        # SAME policy, so it is eval noise, NOT the across-training-seed error bar.
+        print(f"  return: {ret_m:+.4f} +/- {ret_s:.4f}")
+        print(f"  acp:    {acp_m:.4f} +/- {acp_s:.4f}")
+        print(f"  ws:     {ws_m:.5f} +/- {ws_s:.5f}")
+        print("=======================================")
+        print(f"SEEDMEAN,{ret_m:.6f},{ret_s:.6f},{acp_m:.6f},{acp_s:.6f},{ws_m:.6f},{ws_s:.6f}")

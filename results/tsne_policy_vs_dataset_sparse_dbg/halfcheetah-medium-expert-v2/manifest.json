@@ -1,0 +1,14 @@
+{
+  "task": "halfcheetah-medium-expert-v2",
+  "output_dir": "results/tsne_policy_vs_dataset_sparse_dbg/halfcheetah-medium-expert-v2",
+  "num_models": 2,
+  "models": [
+    {
+      "label": "COMBO"
+    },
+    {
+      "label": "COMBO-RealNVP"
+    }
+  ],
+  "combined_panel": "results/tsne_policy_vs_dataset_sparse_dbg/halfcheetah-medium-expert-v2/combined_panel.png"
+}

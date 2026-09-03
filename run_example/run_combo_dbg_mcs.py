@@ -134,7 +134,8 @@ def build_abiomed_dataset(env, timesteps=6, feat=12):
     Mirrors GORMPO cormpo/common/buffer.py::load_dataset branch (b).
     """
     wm = env.world_model
-    splits = [wm.data_train, wm.data_val, wm.data_test]
+    # data_test is held out: the policy must never train on the windows it is scored on.
+    splits = [wm.data_train, wm.data_val]
     data   = torch.cat([torch.as_tensor(s.data)   for s in splits], dim=0).float()   # (N,6,12)
     pl     = torch.cat([torch.as_tensor(s.pl)     for s in splits], dim=0).float()   # (N,6)
     labels = torch.cat([torch.as_tensor(s.labels) for s in splits], dim=0).float()   # (N,66)
@@ -182,7 +183,7 @@ def train(args=get_args()):
     env = AbiomedRLEnvFactory.create_env(
         model_name="10min_1hr_all_data",
         model_path="/home/brian/repos/OfflineRL-Kit2/abiomed_env/data/10min_1hr_all_data_model.pth",
-        data_path ="/home/brian/repos/OfflineRL-Kit2/abiomed_env/data/10min_1hr_all_data.pkl",
+        data_path ="/public/gormpo/10min_1hr_all_data.pkl",   # full MCS data (17,865 windows), not the 300-window sample
         max_steps=6, action_space_type="continuous",
         reward_type="smooth",
         normalize_rewards=True,
@@ -201,8 +202,10 @@ def train(args=get_args()):
     # ^^^ symmetric bound so TanhDiagGaussian(max_mu) can reach both p-level extremes
 
 
-    # seed
-    random.seed(args.seed)
+    # seed: training stochasticity varies with args.seed, the eval protocol does not.
+    # random is rl_env._get_next_episode_start's only consumer -- pinning it to 42 (as
+    # run_combo_in_mcs.py does) gives every seed identical eval windows.
+    random.seed(42)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed_all(args.seed)

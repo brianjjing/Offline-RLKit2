@@ -17,6 +17,7 @@ DATASET="/public/d4rl/sparse_datasets/hopper_medium_expert_sparse_78.pkl"
 GUARDIAN="/public/gormpo/models/hopper_medium_expert_sparse_3/realnvp"  # base path; load_model adds _model.pth/_meta_data.pkl
 ROLLOUT_LENGTH=5          # COMBO medium-expert convention
 CQL_WEIGHT=5.0
+REAL_RATIO=0.5          # keep in lockstep with the COMBO baseline scripts in GORMPO/bash_scr/mult_seed
 PENALTY_COEF=0.8          # GORMPO-tuned guardian scale; consider lowering for COMBO (CQL already regularizes)
 PENALTY_TYPE=tanh
 seeds=(42 123 456)
@@ -35,5 +36,6 @@ for seed in "${seeds[@]}"; do
         --penalty-type "$PENALTY_TYPE" \
         --rollout-length "$ROLLOUT_LENGTH" \
         --cql-weight "$CQL_WEIGHT" \
+        --real-ratio "$REAL_RATIO" \
         --seed "$seed"
 done

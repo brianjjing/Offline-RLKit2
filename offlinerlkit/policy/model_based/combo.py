@@ -72,6 +72,7 @@ class COMBOPolicy(CQLPolicy):
 
         num_transitions = 0
         rewards_arr = np.array([])
+        penalties_arr = np.array([])
         rollout_transitions = defaultdict(list)
 
         # rollout
@@ -94,6 +95,10 @@ class COMBOPolicy(CQLPolicy):
 
             num_transitions += len(observations)
             rewards_arr = np.append(rewards_arr, rewards.flatten())
+            # dynamics.step returns the guardian penalty in info; it is dropped here
+            # otherwise, which is why no DBG run has ever logged one.
+            if "penalty" in info:
+                penalties_arr = np.append(penalties_arr, info["penalty"].flatten())
 
             nonterm_mask = (~terminals).flatten()
             if nonterm_mask.sum() == 0:
@@ -104,8 +109,14 @@ class COMBOPolicy(CQLPolicy):
         for k, v in rollout_transitions.items():
             rollout_transitions[k] = np.concatenate(v, axis=0)
 
-        return rollout_transitions, \
-            {"num_transitions": num_transitions, "reward_mean": rewards_arr.mean()}
+        # reward_mean is POST-penalty (dynamics.step returns penalized_rewards), so the
+        # penalty stats below are what separates guardian effect from raw model reward.
+        rollout_info = {"num_transitions": num_transitions, "reward_mean": rewards_arr.mean()}
+        if penalties_arr.size:
+            rollout_info["penalty_mean"] = penalties_arr.mean()
+            rollout_info["penalty_max"] = penalties_arr.max()
+            rollout_info["penalty_frac_nonzero"] = (penalties_arr > 0).mean()
+        return rollout_transitions, rollout_info
     
     def learn(self, batch: Dict) -> Dict[str, float]:
         real_batch, fake_batch = batch["real"], batch["fake"]

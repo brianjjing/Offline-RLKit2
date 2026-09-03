@@ -22,7 +22,7 @@ from offlinerlkit.utils.logger import Logger, make_log_dirs
 from offlinerlkit.policy_trainer import MBPolicyTrainer
 from offlinerlkit.policy import COMBOPolicy
 
-from realnvp_module.realnvp import RealNVP
+from offlinerlkit.utils.guardians import GUARDIAN_TYPES, load_guardian
 
 
 """
@@ -93,8 +93,23 @@ def get_args():
 
     # vvv density guardian (DBG) args vvv
     parser.add_argument("--classifier-path", type=str, default=None,
-                        help="Base path to the trained RealNVP checkpoint (no _model.pth/"
+                        help="Base path to the trained guardian checkpoint (no _model.pth/"
                              "_meta_data.pkl suffix), trained on [next_obs, action] of this task. Required.")
+    parser.add_argument("--guardian-type", type=str, default=None, choices=list(GUARDIAN_TYPES),
+                        help="Density estimator behind the guardian. Inferred from the "
+                             "checkpoint basename when omitted (realnvp_42 -> realnvp).")
+    parser.add_argument("--gormpo-root", type=str, default=None,
+                        help="GORMPO checkout supplying the vae/kde/diffusion/neuralode "
+                             "implementations. Defaults to $GORMPO_ROOT. Unused for realnvp.")
+    parser.add_argument("--threshold-percentile", type=float, default=None,
+                        help="Override thr with a pre-computed threshold_candidates entry.")
+    parser.add_argument("--devid", type=int, default=0, help="GPU id for the KDE faiss index.")
+    parser.add_argument("--guardian-chunk-size", type=int, default=4096,
+                        help="Max samples per guardian score_samples call. Only binds for "
+                             "neuralode, whose ODE solve allocates with the batch. Measured on a "
+                             "24GiB card at rollout-batch-size=50000: 2048->117h/4.6GiB, "
+                             "4096->58h/9.4GiB, 8192->30h/18.4GiB. Larger is faster but leaves "
+                             "less room for COMBO itself; 4096 is the safe default.")
     parser.add_argument("--penalty-coef", type=float, default=1.0,
                         help="OOD reward-penalty scale. MUST be nonzero or the guardian no-ops; tune per task.")
     parser.add_argument("--penalty-type", type=str, default="linear",
@@ -194,8 +209,17 @@ def train(args=get_args()):
 
     # density guardian (DBG): load RealNVP and hand it to EnsembleDynamics.
     assert args.classifier_path is not None, \
-        "run_combo_dbg_sparse_d4rl.py requires --classifier-path (trained RealNVP checkpoint)"
-    classifier = RealNVP.load_model(args.classifier_path, device=args.device)  # -> {'model','thr',...}
+        "run_combo_dbg_sparse_d4rl.py requires --classifier-path (trained guardian checkpoint)"
+    classifier = load_guardian(
+        args.classifier_path,
+        device=args.device,
+        guardian_type=args.guardian_type,
+        devid=args.devid,
+        threshold_percentile=args.threshold_percentile,
+        task=args.task,
+        gormpo_root=args.gormpo_root,
+        chunk_size=args.guardian_chunk_size,
+    )  # -> {'model','thr','mean','std','name'}
 
     dynamics = EnsembleDynamics(
         dynamics_model,

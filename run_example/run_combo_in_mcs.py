@@ -92,6 +92,11 @@ def get_args():
 
     return parser.parse_args()
 
+# eval windows are drawn from python-random; pinned so across-seed std measures
+# training variance, not which patients each run happened to be tested on.
+ENV_SEED = 42
+
+
 #ADDED FOR ABIOMED ENV
 def termination_fn_abiomed(obs, act, next_obs):
     # fixed-horizon episodes: the twin never terminates mid-rollout
@@ -129,7 +134,8 @@ def build_abiomed_dataset(env, timesteps=6, feat=12):
     Mirrors GORMPO cormpo/common/buffer.py::load_dataset branch (b).
     """
     wm = env.world_model
-    splits = [wm.data_train, wm.data_val, wm.data_test]
+    # data_test is held out: the policy must never train on the windows it is scored on.
+    splits = [wm.data_train, wm.data_val]
     data   = torch.cat([torch.as_tensor(s.data)   for s in splits], dim=0).float()   # (N,6,12)
     pl     = torch.cat([torch.as_tensor(s.pl)     for s in splits], dim=0).float()   # (N,6)
     labels = torch.cat([torch.as_tensor(s.labels) for s in splits], dim=0).float()   # (N,66)
@@ -177,9 +183,9 @@ def train(args=get_args()):
     env = AbiomedRLEnvFactory.create_env(
         model_name="10min_1hr_all_data",
         model_path="/home/brian/repos/OfflineRL-Kit2/abiomed_env/data/10min_1hr_all_data_model.pth",
-        data_path ="/home/brian/repos/OfflineRL-Kit2/abiomed_env/data/10min_1hr_all_data.pkl",
+        data_path ="/public/gormpo/10min_1hr_all_data.pkl",   # full MCS data (17,865 windows), not the 300-window sample
         max_steps=6, action_space_type="continuous",
-        reward_type="smooth", normalize_rewards=True, seed=args.seed,
+        reward_type="smooth", normalize_rewards=True, seed=ENV_SEED,
         device=args.device)  # override config.py's hardcoded cuda:1 (invalid under CUDA_VISIBLE_DEVICES=1)
     dataset = build_abiomed_dataset(env)
     
@@ -194,13 +200,15 @@ def train(args=get_args()):
     # ^^^ symmetric bound so TanhDiagGaussian(max_mu) can reach both p-level extremes
 
 
-    # seed
-    random.seed(args.seed)
+    # seed: training stochasticity varies with args.seed, the eval protocol does not.
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed_all(args.seed)
     torch.backends.cudnn.deterministic = True
-    env.seed(args.seed)
+    # NOT env.seed(ENV_SEED) -- rl_env.seed() also resets np/torch, collapsing every seed
+    # to one run. rl_env._get_next_episode_start is python-random's only consumer, so
+    # pinning that stream alone gives all seeds the identical eval windows every epoch.
+    random.seed(ENV_SEED)
 
     # create policy model
     actor_backbone = MLP(input_dim=np.prod(args.obs_shape), hidden_dims=args.hidden_dims)
@@ -263,6 +271,7 @@ def train(args=get_args()):
         classifier=classifier,
         penalty_type=args.penalty_type
     )
+
     _w = dynamics._return_kde_penalty(
         dataset["next_observations"][:256], dataset["actions"][:256], type=args.penalty_type)
     assert 0.0 <= _w.min() and _w.max() <= 1.0, f"penalty escaped [0,1]: {_w.min():.3f}..{_w.max():.3f}"
