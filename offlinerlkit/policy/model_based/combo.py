@@ -116,6 +116,9 @@ class COMBOPolicy(CQLPolicy):
             rollout_info["penalty_mean"] = penalties_arr.mean()
             rollout_info["penalty_max"] = penalties_arr.max()
             rollout_info["penalty_frac_nonzero"] = (penalties_arr > 0).mean()
+            # raw per-transition penalties of THIS rollout; mb_policy_trainer dumps it each
+            # epoch so the final distribution survives, not just the 3 summaries above.
+            self.last_penalties = penalties_arr.astype(np.float32)
         return rollout_transitions, rollout_info
     
     def learn(self, batch: Dict) -> Dict[str, float]:

@@ -131,7 +131,7 @@ def plot_func(
         csv_file = merge_csv(path, query_file, query_x, query_y)
         results[algo] = csv_file
 
-    plt.style.use('seaborn')
+    plt.style.use('seaborn-v0_8')
     plot_figure(
         results=results,
         x_label=xlabel,
@@ -173,7 +173,7 @@ if __name__ == "__main__":
         csv_file = merge_csv(path, args.query_file, args.query_x, args.query_y)
         results[algo] = csv_file
 
-    plt.style.use('seaborn')
+    plt.style.use('seaborn-v0_8')
     plot_figure(
         results=results,
         x_label=args.xlabel,

@@ -109,6 +109,11 @@ class MBPolicyTrainer:
         
             # save checkpoint
             torch.save(self.policy.state_dict(), os.path.join(self.logger.checkpoint_dir, "policy.pth"))
+            # overwritten each epoch, so it always holds the most recent rollout's penalties
+            # (guardian runs only; ~1.2MB at rollout_batch_size 50000)
+            penalties = getattr(self.policy, "last_penalties", None)
+            if penalties is not None:
+                np.save(os.path.join(self.logger.checkpoint_dir, "last_penalties.npy"), penalties)
 
         self.logger.log("total time: {:.2f}s".format(time.time() - start_time))
         torch.save(self.policy.state_dict(), os.path.join(self.logger.model_dir, "policy.pth"))

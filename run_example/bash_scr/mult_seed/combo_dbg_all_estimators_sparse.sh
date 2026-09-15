@@ -7,6 +7,9 @@
 # realnvp sweep; this one is the estimator sweep.
 set -euo pipefail
 
+# Absolute, resolved before the cd below -- the detach re-exec needs it.
+SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+
 source ~/miniconda3/etc/profile.d/conda.sh
 conda activate COMBO
 
@@ -69,6 +72,18 @@ guardian_path () {
   esac
 }
 
+# The dynamics ensemble depends on (task, dataset, seed) only -- the guardian is applied in
+# EnsembleDynamics.step() at rollout time, never in dynamics.train() -- so one trained ensemble
+# serves every estimator. Retraining it costs 9-20 h/task. Reuse the newest one on disk;
+# DYNAMICS_DIR=<path> pins a specific model dir, DYNAMICS_REUSE=0 forces a fresh train.
+find_dynamics () {
+  local task="$1" d
+  if [ -n "${DYNAMICS_DIR:-}" ]; then echo "$DYNAMICS_DIR"; return; fi
+  while IFS= read -r d; do
+    if [ -f "$d/dynamics.pth" ]; then echo "$d"; return; fi
+  done < <(ls -dt "log/${task}/combo/seed_${SEED}&timestamp_"*"_sparse/model" 2>/dev/null || true)
+}
+
 # preflight: fail loudly now, not 30s into a multi-hour run
 for row in "${TASKS[@]}"; do
   IFS='|' read -r task dataset gdir _ _ _ <<< "$row"
@@ -84,13 +99,34 @@ for row in "${TASKS[@]}"; do
 done
 echo "preflight OK (device=${DEVICE}): $(echo $ESTIMATORS | wc -w) estimators x ${#TASKS[@]} tasks, seed ${SEED}"
 
+# These runs are 30+ h/task and were previously killed by SIGHUP when the Cursor/ssh terminal
+# went away. setsid detaches from the pty outright, so there is no tmux/screen server left to
+# die either; output goes to a log you can tail. DETACH=0 to stay in the foreground.
+if [ "${DETACH:-1}" = 1 ] && [ -z "${DBG_DETACHED:-}" ]; then
+  mkdir -p "$REPO/log/_runs"
+  LOGFILE="$REPO/log/_runs/dbg_$(echo $ESTIMATORS | tr ' ' '-')_$(date +%m%d-%H%M%S).log"
+  DBG_DETACHED=1 setsid nohup bash "$SELF" "$@" >"$LOGFILE" 2>&1 </dev/null &
+  echo "detached: pid $!"
+  echo "  tail -f $LOGFILE"
+  exit 0
+fi
+
 for row in "${TASKS[@]}"; do
   IFS='|' read -r task dataset gdir rollout cql real_ratio <<< "$row"
   for est in $ESTIMATORS; do
     g="$(guardian_path "$gdir" "$est")"
     penalty="$(penalty_coef "$task" "$est")"
     echo ">>> COMBO+DBG $task est=$est (seed=$SEED, penalty=${PENALTY_TYPE}x${penalty})"
+    dyn_args=()
+    if [ "${DYNAMICS_REUSE:-1}" = 1 ]; then
+      dyn="$(find_dynamics "$task")"
+      if [ -n "$dyn" ]; then
+        echo "    reusing dynamics: $dyn"
+        dyn_args=(--load-dynamics-path "$dyn")
+      fi
+    fi
     python "$SCRIPT" \
+      ${dyn_args[@]+"${dyn_args[@]}"} \
       --task "$task" \
       --dataset-path "$dataset" \
       --classifier-path "$g" \
