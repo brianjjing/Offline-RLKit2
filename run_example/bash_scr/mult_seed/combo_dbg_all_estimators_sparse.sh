@@ -21,6 +21,10 @@ export PYTHONPATH="$REPO"
 export GORMPO_ROOT="${GORMPO_ROOT:-/home/brian/repos/GORMPO}"
 
 SEED="${SEED:-42}"
+# Env eval seed, decoupled from the training/model SEED above -- pinned so all
+# seeds are scored on identical eval conditions. --env-seed is a new flag on
+# run_combo_dbg_sparse_d4rl.py; defaults there to SEED if omitted.
+ENV_SEED="${ENV_SEED:-42}"
 # run_combo_dbg_sparse_d4rl.py defaults to "cuda" == cuda:0, which is usually the busiest card.
 # Pin explicitly: DEVICE=cuda:5, or CUDA_VISIBLE_DEVICES=5 with DEVICE=cuda.
 DEVICE="${DEVICE:-cuda}"
@@ -138,7 +142,8 @@ for row in "${TASKS[@]}"; do
       --real-ratio "$real_ratio" \
       --device "$DEVICE" \
       --guardian-chunk-size "$GUARDIAN_CHUNK_SIZE" \
-      --seed "$SEED"
+      --seed "$SEED" \
+      --env-seed "$ENV_SEED"
   done
 done
 

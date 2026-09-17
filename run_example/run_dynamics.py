@@ -88,6 +88,10 @@ def get_args():
     parser.add_argument("--model-tag", type=str, default=None,
                          help="Subdirectory name for the saved dynamics ensemble; "
                               "defaults to --task if unset.")
+    parser.add_argument("--model-base-dir", type=str, default="./models/dynamics-ensemble/",
+                         help="Root dir for saved dynamics ensembles. Override to keep "
+                              "ensembles trained on different datasets (e.g. real vs "
+                              "synthetic MCS data) from colliding at the same seed/task path.")
 
     return parser.parse_args()
 
@@ -100,6 +104,11 @@ def load_neorl_dataset(env, data_type, traj_num=1000):
     dataset["rewards"] = train_data["reward"]
     dataset["terminals"] = train_data["done"]
     return dataset
+
+def termination_fn_abiomed(obs, act, next_obs):
+    # fixed-horizon episodes: the twin never terminates mid-rollout
+    return np.zeros((len(obs), 1), dtype=bool)
+
 
 def train(args=get_args()):
     '''
@@ -114,9 +123,25 @@ def train(args=get_args()):
     )
     '''
     is_neorl = args.task.split('-')[1] == 'v3'
+    is_abiomed = "abiomed" in args.task
 
     # create env and dataset
-    if is_neorl:
+    if is_abiomed:
+        sys.path.insert(0, "/home/brian/repos/GORMPO_abiomed/abiomed_env")
+        from rl_env import AbiomedRLEnvFactory
+        assert args.dataset_path is not None, "abiomed-v0 requires --dataset-path pointing to a .npz offline dataset"
+        env = AbiomedRLEnvFactory.create_env(
+            model_name="10min_1hr_all_data",
+            model_path="/home/brian/repos/OfflineRL-Kit2/abiomed_env/data/10min_1hr_all_data_model.pth",
+            data_path="/public/gormpo/10min_1hr_all_data.pkl",
+            max_steps=6, action_space_type="continuous",
+            reward_type="smooth", normalize_rewards=True,
+            seed=args.seed, device=args.device,
+        )
+        _raw = np.load(args.dataset_path)
+        dataset = {k: _raw[k] for k in ["observations", "actions", "next_observations", "rewards", "terminals"]}
+        print(f"Using dataset from {args.dataset_path} ({len(dataset['observations'])} transitions)")
+    elif is_neorl:
         import neorl
         task, version, data_type = tuple(args.task.split("-"))
         env = neorl.make(task+'-'+version)
@@ -131,7 +156,8 @@ def train(args=get_args()):
             dataset = qlearning_dataset(env)
     args.obs_shape = env.observation_space.shape
     args.action_dim = np.prod(env.action_space.shape)
-    args.max_action = env.action_space.high[0]
+    args.max_action = max(abs(env.action_space.low[0]), abs(env.action_space.high[0])) if is_abiomed \
+        else env.action_space.high[0]
 
     # seed
     random.seed(args.seed)
@@ -186,7 +212,7 @@ def train(args=get_args()):
         lr=args.dynamics_lr
     )
     scaler = StandardScaler()
-    termination_fn = get_termination_fn(task=args.task)
+    termination_fn = termination_fn_abiomed if is_abiomed else get_termination_fn(task=args.task)
     dynamics = EnsembleDynamics(
         dynamics_model,
         dynamics_optim,
@@ -247,8 +273,8 @@ def train(args=get_args()):
 
     dynamics.train(real_buffer.sample_all(), logger, max_epochs_since_update=5)
     dynamics_tag = args.model_tag or args.task
-    os.makedirs(os.path.join('./models/dynamics-ensemble/', str(args.seed), dynamics_tag), exist_ok = True)
-    dynamics.save(os.path.join('./models/dynamics-ensemble/', str(args.seed), dynamics_tag))
+    os.makedirs(os.path.join(args.model_base_dir, str(args.seed), dynamics_tag), exist_ok = True)
+    dynamics.save(os.path.join(args.model_base_dir, str(args.seed), dynamics_tag))
 
 import wandb
 if __name__ == "__main__":

@@ -52,6 +52,10 @@ def get_args():
     parser.add_argument("--algo-name", type=str, default="combo")
     parser.add_argument("--task", type=str, default="hopper-medium-v2")
     parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument("--env-seed", type=int, default=None,
+                        help="Seed for env.seed() only, decoupled from --seed (which still "
+                             "drives random/numpy/torch/cuda init). Defaults to --seed if unset, "
+                             "so existing single-seed invocations are unaffected.")
     parser.add_argument("--actor-lr", type=float, default=1e-4)
     parser.add_argument("--critic-lr", type=float, default=3e-4)
     parser.add_argument("--hidden-dims", type=int, nargs='*', default=[256, 256, 256])
@@ -157,7 +161,7 @@ def train(args=get_args()):
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed_all(args.seed)
     torch.backends.cudnn.deterministic = True
-    env.seed(args.seed)
+    env.seed(args.env_seed if args.env_seed is not None else args.seed)
 
     # create policy model
     actor_backbone = MLP(input_dim=np.prod(args.obs_shape), hidden_dims=args.hidden_dims)

@@ -63,8 +63,17 @@ def load_guardian(
     task: str = None,
     gormpo_root: str = None,
     chunk_size: int = 4096,
+    target_dim: int = None,
+    vae_hidden_dims=None,
 ) -> dict:
-    """Return the classifier dict EnsembleDynamics expects, for any estimator type."""
+    """Return the classifier dict EnsembleDynamics expects, for any estimator type.
+
+    target_dim: forwarded to neuralode only, for checkpoints whose metadata lacks
+    it and whose path doesn't contain a recognized D4RL env name (e.g. abiomed).
+    vae_hidden_dims: forwarded to vae only, for checkpoints whose metadata lacks
+    'hidden_dims' and whose architecture doesn't match VAE.load_model's [256, 128]
+    default (e.g. abiomed_vae, which is [256, 256]).
+    """
     kind = guardian_type or infer_guardian_type(classifier_path)
     print(f"[guardian] type={kind} path={classifier_path}")
 
@@ -78,7 +87,10 @@ def load_guardian(
         _use_gormpo(gormpo_root)
         from vae_module.vae import VAE
 
-        info = VAE.load_model(classifier_path, device=device)
+        vae_kwargs = {"device": device}
+        if vae_hidden_dims is not None:
+            vae_kwargs["hidden_dims"] = vae_hidden_dims
+        info = VAE.load_model(classifier_path, **vae_kwargs)
 
     elif kind == "kde":
         _use_gormpo(gormpo_root)
@@ -91,7 +103,9 @@ def load_guardian(
         from neuralODE.neural_ode_ood import NeuralODEOOD
 
         info = NeuralODEOOD.load_model(
-            save_path=classifier_path.replace("_model.pt", ""), device=device
+            save_path=classifier_path.replace("_model.pt", ""),
+            device=device,
+            target_dim=target_dim,
         )
         # NeuralODEOOD calls it 'threshold'; EnsembleDynamics reads 'thr'.
         info["thr"] = info["threshold"]
@@ -131,27 +145,32 @@ def load_guardian(
 
         import torch
 
-        target_dim = torch.load(ckpt_path, map_location=device).get("target_dim")
+        ckpt = torch.load(ckpt_path, map_location=device)
+        target_dim = ckpt.get("target_dim")
         wrapper = _DiffusionDensityWrapper(model, scheduler, target_dim, device, root)
 
-        # Threshold: GORMPO reads it from the task's ELBO metrics, relative to its repo root.
-        thr = 0.0
-        if task:
-            prefix = task.lower().split("_")[0].split("-")[0]
-            thr_path = os.path.join(
-                root, "diffusion/monte_carlo_results", f"{prefix}_unconditional_ddpm/elbo_metrics.json"
-            )
-            if os.path.exists(thr_path):
-                with open(thr_path, "r", encoding="utf-8") as f:
-                    thr = json.load(f).get("percentile_1.0_logp", 0.0)
-            else:
-                print(f"[guardian] no elbo_metrics.json at {thr_path}; thr=0.0")
+        # Threshold: some checkpoints (e.g. abiomed) embed it directly from training.
+        # The sparse D4RL ones don't -- GORMPO reads those from the task's ELBO metrics
+        # file instead, relative to its repo root.
+        thr = ckpt.get("threshold")
+        candidates = ckpt.get("threshold_candidates") or {}
+        if thr is None:
+            thr = 0.0
+            if task:
+                prefix = task.lower().split("_")[0].split("-")[0]
+                thr_path = os.path.join(
+                    root, "diffusion/monte_carlo_results", f"{prefix}_unconditional_ddpm/elbo_metrics.json"
+                )
+                if os.path.exists(thr_path):
+                    with open(thr_path, "r", encoding="utf-8") as f:
+                        thr = json.load(f).get("percentile_1.0_logp", 0.0)
+                else:
+                    print(f"[guardian] no elbo_metrics.json at {thr_path}; thr=0.0")
 
-        candidates = {}
-        sidecar = os.path.join(os.path.dirname(ckpt_path), "checkpoint_metadata.pkl")
-        if os.path.exists(sidecar):
-            with open(sidecar, "rb") as f:
-                candidates = pickle.load(f).get("threshold_candidates", {}) or {}
+            sidecar = os.path.join(os.path.dirname(ckpt_path), "checkpoint_metadata.pkl")
+            if os.path.exists(sidecar):
+                with open(sidecar, "rb") as f:
+                    candidates = pickle.load(f).get("threshold_candidates", {}) or {}
 
         info = {"model": wrapper, "thr": thr, "threshold_candidates": candidates}
 

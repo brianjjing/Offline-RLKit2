@@ -19,7 +19,7 @@ from offlinerlkit.utils.logger import Logger, make_log_dirs
 from offlinerlkit.policy_trainer import MBPolicyTrainer
 from offlinerlkit.policy import COMBOPolicy
 
-from realnvp_module.realnvp import RealNVP
+from offlinerlkit.utils.guardians import GUARDIAN_TYPES, load_guardian
 
 sys.path.insert(0, "/home/brian/repos/OfflineRL-Kit2/abiomed_env")
 
@@ -81,8 +81,20 @@ def get_args():
 
     # vvv density guardian (DBG) args vvv
     parser.add_argument("--classifier-path", type=str, default=None,
-                        help="Base path to the trained RealNVP checkpoint (no _model.pth/"
+                        help="Base path to the trained guardian checkpoint (no _model.pth/"
                              "_meta_data.pkl suffix), trained on [next_obs, action] of this task. Required.")
+    parser.add_argument("--guardian-type", type=str, default=None, choices=list(GUARDIAN_TYPES),
+                        help="Density estimator behind the guardian. Inferred from the "
+                             "checkpoint basename when omitted (realnvp_42 -> realnvp).")
+    parser.add_argument("--gormpo-root", type=str, default=None,
+                        help="GORMPO checkout supplying the vae/kde/diffusion/neuralode "
+                             "implementations. Defaults to $GORMPO_ROOT. Unused for realnvp.")
+    parser.add_argument("--threshold-percentile", type=float, default=None,
+                        help="Override thr with a pre-computed threshold_candidates entry.")
+    parser.add_argument("--devid", type=int, default=0, help="GPU id for the KDE faiss index.")
+    parser.add_argument("--guardian-chunk-size", type=int, default=4096,
+                        help="Max samples per guardian score_samples call. Only binds for "
+                             "neuralode, whose ODE solve allocates with the batch.")
     parser.add_argument("--penalty-coef", type=float, default=1.0,
                         help="OOD reward-penalty scale. MUST be nonzero or the guardian no-ops; tune per task.")
     parser.add_argument("--penalty-type", type=str, default="linear",
@@ -263,10 +275,27 @@ def train(args=get_args()):
     #termination_fn = get_termination_fn(task=args.task)
     termination_fn = termination_fn_abiomed
 
-    # density guardian (DBG): load RealNVP and hand it to EnsembleDynamics.
+    # density guardian (DBG): load the estimator and hand it to EnsembleDynamics.
     assert args.classifier_path is not None, \
-        "run_combo_dbg_mcs.py requires --classifier-path (trained RealNVP checkpoint)"
-    classifier = RealNVP.load_model(args.classifier_path, device=args.device)  # -> {'model','thr',...}
+        "run_combo_dbg_mcs.py requires --classifier-path (trained guardian checkpoint)"
+    classifier = load_guardian(
+        args.classifier_path,
+        device=args.device,
+        guardian_type=args.guardian_type,
+        devid=args.devid,
+        threshold_percentile=args.threshold_percentile,
+        task=args.task,
+        gormpo_root=args.gormpo_root,
+        chunk_size=args.guardian_chunk_size,
+        # abiomed guardians are trained on [next_obs, action] like the D4RL ones, but their
+        # checkpoints don't self-describe this the same way -- neuralode's metadata has no
+        # target_dim (and "abiomed" doesn't match its D4RL-env-name path inference), and
+        # abiomed_vae's metadata lacks hidden_dims (its arch is [256,256], not the [256,128]
+        # default). Both are derivable from this env, so pass them instead of patching the
+        # checkpoints on shared storage.
+        target_dim=int(np.prod(args.obs_shape) + args.action_dim),
+        vae_hidden_dims=[256, 256] if args.guardian_type == "vae" else None,
+    )  # -> {'model','thr','mean','std','name'}
 
     dynamics = EnsembleDynamics(
         dynamics_model,
@@ -326,7 +355,10 @@ def train(args=get_args()):
     )
 
     # log
-    log_dirs = make_log_dirs(args.task, args.algo_name, args.seed, vars(args))
+    # guardian_type in the dir name: running multiple estimators concurrently (see
+    # combo_dbg_all_estimators_mcs.sh) means the plain seed+timestamp path isn't enough to
+    # tell two runs apart if their timestamps land in the same second.
+    log_dirs = make_log_dirs(args.task, args.algo_name, args.seed, vars(args), record_params=["guardian_type"])
     # key: output file name, value: output handler type
     output_config = {
         "consoleout_backup": "stdout",
