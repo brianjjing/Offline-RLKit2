@@ -45,8 +45,12 @@ echo "============================================"
 
 for seed in "${seeds[@]}"; do
     echo ">>> Training COMBO+DBG (seed=$seed)"
+    # --guardian-type explicit: infer_guardian_type() matches on a basename PREFIX, and
+    # this checkpoint's basename is "abiomed_realnvp" (prefixed "abiomed_", not "realnvp_"),
+    # so inference raises ValueError -- confirmed by a live crash on 2026-09-22.
     python "$SCRIPT" --seed "$seed" --device "$DEVICE" \
-        --classifier-path "$GUARDIAN" --penalty-coef "$PENALTY_COEF" --penalty-type "$PENALTY_TYPE" $EXTRA_ARGS
+        --classifier-path "$GUARDIAN" --guardian-type realnvp \
+        --penalty-coef "$PENALTY_COEF" --penalty-type "$PENALTY_TYPE" $EXTRA_ARGS
 
     # newest log dir for this seed (make_log_dirs stamps seed_<seed>&timestamp_<ts>)
     d=$(ls -dt "log/abiomed/combo/seed_${seed}&timestamp_"* 2>/dev/null | head -1)
